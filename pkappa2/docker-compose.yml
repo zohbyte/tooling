@@ -1,0 +1,12 @@
+services:
+  pkappa2:
+    build:
+      context: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - /root/tooling/pkappa2/data:/data
+      - /root/tooling/pkappa2/:/app/converters
+    restart: unless-stopped
+    env_file:
+      - .env
