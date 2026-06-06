@@ -348,7 +348,7 @@ def inject_tulip_api_basic_auth(tulip_dir: Path, username: str, password: str) -
     if insert_marker not in content:
         return False
 
-    new_imports = """from flask import Flask, Response, send_file, request\nimport base64\n"""
+    new_imports = """from flask import Flask, Response, send_file, request\nimport base64, os\n"""
     content = content.replace(insert_marker, new_imports, 1)
 
     auth_code = """

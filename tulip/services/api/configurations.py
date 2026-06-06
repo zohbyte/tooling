@@ -27,8 +27,8 @@ from pathlib import Path
 
 traffic_dir = Path(os.getenv("TULIP_TRAFFIC_DIR", "/traffic"))
 dump_pcaps_dir = Path(os.getenv("DUMP_PCAPS", "/traffic"))
-tick_length = os.getenv("TICK_LENGTH", 2*60*1000)
-flag_lifetime = os.getenv("FLAG_LIFETIME", 5)
+tick_length = int(os.getenv("TICK_LENGTH", 2*60*1000))
+flag_lifetime = int(os.getenv("FLAG_LIFETIME", 5))
 start_date = os.getenv("TICK_START", "2018-06-27T13:00:00+02:00")
 flag_regex = os.getenv("FLAG_REGEX", "[A-Z0-9]{31}=")
 vm_ip = os.getenv("VM_IP", "10.10.3.1")
@@ -39,5 +39,18 @@ helper = '''
 
 '''
 
-services = [{"ip": x.split(" ")[0].split(":")[0], "port": int(x.split(" ")[0].split(":")[1]), "name": " ".join(x.split(" ")[1:])} for x in helper.strip().split("\n") if x.strip()]
+services = []
+for line in helper.strip().split('\n'):
+    line = line.strip()
+    if not line or ':' not in line:
+        continue
+    try:
+        parts = line.split()
+        addr = parts[0]
+        name = " ".join(parts[1:])
+        ip, port = addr.split(':')
+        services.append({"ip": ip, "port": int(port), "name": name})
+    except (ValueError, IndexError):
+        continue
+
 services += [{"ip": vm_ip_1, "port": -1, "name": "other"}]
