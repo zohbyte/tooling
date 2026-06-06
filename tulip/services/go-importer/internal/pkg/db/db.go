@@ -50,16 +50,22 @@ func NewDatabase(connectionString string) *Database {
 	for {
 		err := database.pool.Ping(context.Background())
 		if err == nil {
-			// Check if schema is initialized by querying a known table from schema.sql
-			var exists bool
-			checkErr := database.pool.QueryRow(context.Background(), "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'pcap')").Scan(&exists)
-			if checkErr == nil && exists {
+			// Check if schema is fully initialized by querying core tables from schema.sql.
+			// We verify the existence of all core tables used by the assembler and enricher.
+			var count int
+			checkErr := database.pool.QueryRow(context.Background(), `
+				SELECT COUNT(*) FROM information_schema.tables 
+				WHERE table_schema = 'public' 
+				AND table_name = ANY(ARRAY['pcap', 'flow', 'flow_item', 'flow_index', 'tag', 'fingerprint', 'flag_id'])
+			`).Scan(&count)
+
+			if checkErr == nil && count == 7 {
 				break
 			}
 			if checkErr != nil {
 				log.Println("Database reachable but schema check failed:", checkErr)
 			} else {
-				log.Println("Database reachable but 'pcap' table not found. Waiting for schema initialization...")
+				log.Printf("Database reachable but schema not fully initialized (%d/7 tables found). Waiting...\n", count)
 			}
 		} else {
 			log.Println("Unable to connect to database:", err)
