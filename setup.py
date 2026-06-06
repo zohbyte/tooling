@@ -10,7 +10,7 @@ import secrets
 import shutil
 import stat
 import subprocess
-import syss
+import sys
 import time
 from pathlib import Path
 
