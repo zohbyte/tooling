@@ -27,7 +27,7 @@ if os.name == "nt":
 else:
     SERVICES_ROOT    = Path("/services")
     WORKSPACES_ROOT  = Path("/root/workspaces")
-    BACKUPS_ROOT     = Path("/root/backups")
+    BACKUPS_ROOT     = Path("/root/backups")s
     BIN_PATH         = Path("/usr/local/bin")
     PCAP_DIR         = Path("/root/pcaps")
     LOG_FILE         = Path("/root/setup.log")
