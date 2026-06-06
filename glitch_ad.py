@@ -63,7 +63,7 @@ class GlitchADClient:
 if __name__ == "__main__":
     import os
 
-    base = os.environ.get("GLITCH_AD_URL", "http://127.0.0.1:8000")
+    base = os.environ.get("GLITCH_AD_URL", "https://glitch.ad")
     client = GlitchADClient(base)
 
     print("Ping:", client.ping())
