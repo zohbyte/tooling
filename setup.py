@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AD framework setup script.
-Prepares workspaces, backs up services, installs tooling, and starts pkappa2 + pcap capture.
+Prepares workspaces, backs up services, installs tooling, and starts Tulip + pcap capture.
 """
 import fnmatch
 import logging
@@ -16,15 +16,25 @@ from pathlib import Path
 
 # Paths
 BASE_DIR         = Path(__file__).parent.resolve()
-SERVICES_ROOT    = Path("/services")
-WORKSPACES_ROOT  = Path("/root/workspaces")
-BACKUPS_ROOT     = Path("/root/backups")
+if os.name == "nt":
+    # Windows path compatibility for CTF host environment
+    SERVICES_ROOT    = Path("C:/services")
+    WORKSPACES_ROOT  = Path.home() / "workspaces"
+    BACKUPS_ROOT     = Path.home() / "backups"
+    BIN_PATH         = Path(os.environ.get("USERPROFILE", "C:/Users/Default")) / "bin"
+    PCAP_DIR         = Path.home() / "pcaps"
+    LOG_FILE         = BASE_DIR / "setup.log"
+else:
+    SERVICES_ROOT    = Path("/services")
+    WORKSPACES_ROOT  = Path("/root/workspaces")
+    BACKUPS_ROOT     = Path("/root/backups")
+    BIN_PATH         = Path("/usr/local/bin")
+    PCAP_DIR         = Path("/root/pcaps")
+    LOG_FILE         = Path("/root/setup.log")
 BIN_DIR          = BASE_DIR / "bin"
-BIN_PATH         = Path("/usr/local/bin")
 EXPLOIT_TEMPLATE = BASE_DIR / "templates" / "exploit.py"
-PKAPPA_DIR       = BASE_DIR / "pkappa2"
-PCAP_DIR         = Path("/root/pcaps")
-LOG_FILE         = Path("/root/setup.log")
+TULIP_DIR        = BASE_DIR / "tulip"
+TULIP_TRAFFIC_DIR = BASE_DIR / "tulip_traffic"
 
 # Logging
 def setup_logging() -> None:
@@ -43,11 +53,18 @@ log = logging.getLogger(__name__)
 def build_config() -> dict:
     return {
         "players": ["zohbyte", "adlee7", "blondetechie", "raidershredder", "NUMB3R_1!"],
-        "pkappa2": {
-            "ip":       "127.0.0.1",
-            "port":     8080,
-            "user":     "admin",
+        "tulip": {
+            "ip":       "127.0.0.1", # Optional: set to container IP or hostname if not running on localhost
+            "frontend_port": 3000,
+            "api_port": 5000,
+            "user":     "admin",    
             "password": secrets.token_hex(16),
+            "traffic_dir": str(TULIP_TRAFFIC_DIR),
+            "tick_start": "2026-03-29T13:00:00Z", # Optional: set to CTF start time or network open time; defaults to now
+            "tick_length": 180000,
+            "flag_regex": "[A-Z0-9]{31}=",
+            "vm_ip": "10.100.3.1", # Optional VM IP for flag validation context; set to "
+            "team_id": 3, # Optional team ID for flag validation context; set to 0 or leave unset if not applicable
         },
         "pcap": {
             "iface":    "game",
@@ -65,6 +82,9 @@ EXECUTABLE = (
 
 def require_tool(name: str) -> None:
     """Abort early if a required binary is missing."""
+    if os.name == "nt" and name == "tcpdump":
+        log.warning("Skipping tcpdump check on Windows (not usually available)")
+        return
     if not shutil.which(name):
         log.error("Required tool not found: %s — install it and re-run.", name)
         sys.exit(1)
@@ -130,6 +150,10 @@ def install_bin_scripts() -> None:
         log.info("No bin/ directory found, skipping.")
         return
 
+    if not BIN_PATH.exists():
+        log.info("Creating bin path %s", BIN_PATH)
+        BIN_PATH.mkdir(parents=True, exist_ok=True)
+
     log.info("Installing bin scripts -> %s", BIN_PATH)
     for src in BIN_DIR.iterdir():
         if not src.is_file():
@@ -174,66 +198,106 @@ def install_requirements() -> None:
         log.error("Manual: %s -m pip install %s", sys.executable, " ".join(pkg_list))
 
 
-def setup_pkappa2(cfg: dict) -> None:
-    log.info("Setting up pkappa2...")
+def setup_tulip(cfg: dict) -> None:
+    log.info("Setting up Tulip...")
     require_tool("docker")
     require_tool("git")
 
-    if not PKAPPA_DIR.exists():
-        try:
-            run(["git", "clone", "https://github.com/pkappa2/pkappa2.git", str(PKAPPA_DIR)])
-            log.info("Cloned pkappa2 -> %s", PKAPPA_DIR)
-        except subprocess.CalledProcessError as exc:
-            log.error("Failed to clone pkappa2: %s", exc)
-            return
-        
-    pw = cfg["password"]
-    env_path = PKAPPA_DIR / ".env"
-    # Ensure /data exists and has rwx permissions (mode 0o777)
-    data_dir = PKAPPA_DIR / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(data_dir, 0o777)
-        log.info("Set permissions 777 on /data")
-    except Exception as exc:
-        log.warning(f"Failed to set permissions on /data: {exc}")
-
-    env_path.write_text(f"""\
-PKAPPA2_USER_PASSWORD={pw}
-PKAPPA2_PCAP_PASSWORD={pw}
-PKAPPA2_BASE_DIR=/data
-PKAPPA2_WATCH_DIR=/pcaps_in
-# PKAPPA2_INDEX_DIR=
-# PKAPPA2_PCAP_DIR=
-# PKAPPA2_SNAPSHOT_DIR=
-# PKAPPA2_STATE_DIR=
-# PKAPPA2_CONVERTER_DIR=
-# PKAPPA2_TCP_CHECK_OPTIONS=1
-# PKAPPA2_TCP_CHECK_STATE=1
-""")
-    log.info("Wrote %s", env_path)
-
-    converters_dir = PKAPPA_DIR / "converters"
-    if converters_dir.exists():
-        for f in converters_dir.glob("*.py"):
-            os.chmod(f, EXECUTABLE)
-    try:
-        run(["docker", "compose", "up", "-d"], cwd=PKAPPA_DIR)
-        log.info("pkappa2 container started.")
-    except subprocess.CalledProcessError as exc:
-        log.error("Failed to start pkappa2: %s", exc)
+    if not TULIP_DIR.exists():
+        log.error("Tulip directory %s does not exist. Please clone it first and re-run.", TULIP_DIR)
         return
 
-    data_dir = PKAPPA_DIR / "data"
-    _wait_for_path(data_dir, timeout=15)
-    if data_dir.exists():
-        chmod_recursive(data_dir, 777)
-    else:
-        log.warning("pkappa2 data dir never appeared at %s", data_dir)
+    # Keep using the existing local clone; remove repository metadata and unused scaffolding.
+    git_dir = TULIP_DIR / ".git"
+    if git_dir.exists():
+        shutil.rmtree(git_dir, ignore_errors=True)
+        log.info("Removed Tulip .git dir")
 
-    _wait_for_pkappa2(cfg)
+    for maybe_remove in [".github", ".devcontainer", "README.md", "SECURITY.md", "docs", "docker-compose-suricata.yml", "docker-compose-test.yml"]:
+        path = TULIP_DIR / maybe_remove
+        if path.exists():
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink()
+            log.info("Removed Tulip repository artifact: %s", path)
 
-    log.info("pkappa2 ready. Password: %s", pw)
+    traffic_dir = Path(cfg["traffic_dir"])
+    if os.name == "nt" and " " in str(traffic_dir):
+        safe_traffic_dir = Path.home() / "tulip_traffic"
+        log.info("Windows traffic path contains spaces; switching TRAFFIC_DIR_HOST to %s", safe_traffic_dir)
+        traffic_dir = safe_traffic_dir
+
+    traffic_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(traffic_dir, 0o777)
+    except Exception as exc:
+        log.warning("Failed to set permissions on traffic dir %s: %s", traffic_dir, exc)
+
+    pw = cfg["password"]
+    user = cfg["user"]
+
+    env_path = TULIP_DIR / ".env"
+    if (TULIP_DIR / ".env.example").exists():
+        shutil.copyfile(TULIP_DIR / ".env.example", env_path)
+
+    env = {
+        "TIMESCALE": "postgres://tulip@timescale:5432/tulip",
+        "TRAFFIC_DIR_HOST": str(traffic_dir.as_posix() if os.name == "nt" else traffic_dir),
+        "TRAFFIC_DIR_DOCKER": "/traffic",
+        "TULIP_AUTH_USERNAME": user,
+        "TULIP_AUTH_PASSWORD": pw,
+        "TICK_START": cfg["tick_start"],
+        "TICK_LENGTH": str(cfg["tick_length"]),
+        "FLAG_REGEX": cfg["flag_regex"],
+        "VM_IP": cfg.get("vm_ip"),
+        "TEAM_ID": cfg.get("team_id"),
+        "PCAP_OVER_IP": "",
+        "DUMP_PCAPS": "",
+        "FLAGID_SCRAPE": "",
+        "FLAGID_SCAN": "",
+        "FLAG_LIFETIME": "",
+        "FLAGID_ENDPOINT": "http://flagidendpoint:8000/flagids.json",
+        "FLAG_VALIDATOR_TYPE": "",
+        "FLAG_VALIDATOR_TEAM": "42",
+        "SURICATA_DIR_HOST": "",
+    }
+
+    existing_env = {}
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=", 1)
+                existing_env[k.strip()] = v.strip().strip('"')
+
+    existing_env.update(env)
+
+    env_path.write_text("\n".join(f"{k}=\"{v}\"" for k, v in existing_env.items()) + "\n")
+    log.info("Wrote %s", env_path)
+
+    # Inject basic auth layer into API service, if not already present
+    injected = inject_tulip_api_basic_auth(TULIP_DIR, user, pw)
+    if injected:
+        log.info("Injected Tulip API basic auth wrapper")
+
+    # Remove stale timescale volume so schema init runs cleanly every setup.
+    try:
+        run(["docker", "volume", "rm", "-f", "tulip_timescale-data"], cwd=TULIP_DIR)
+        log.info("Removed existing tulip_timescale-data volume for clean schema init")
+    except subprocess.CalledProcessError:
+        log.info("No existing tulip_timescale-data volume to remove")
+
+    # Start Tulip stack and then wait for frontend endpoint
+    try:
+        run(["docker", "compose", "up", "-d"], cwd=TULIP_DIR)
+        log.info("tulip containers started")
+    except subprocess.CalledProcessError as exc:
+        log.error("Failed to start tulip: %s", exc)
+        return
+
+    _wait_for_tulip(cfg)
+
+    log.info("tulip ready. User: %s Password: %s", user, pw)
 
 
 def _wait_for_path(path: Path, timeout: int = 15) -> None:
@@ -242,10 +306,10 @@ def _wait_for_path(path: Path, timeout: int = 15) -> None:
         time.sleep(0.5)
 
 
-def _wait_for_pkappa2(cfg: dict, timeout: int = 30) -> None:
-    """Poll pkappa2's HTTP endpoint until it responds or we give up."""
-    url = f"http://{cfg['ip']}:{cfg['port']}/"
-    log.info("Waiting for pkappa2 at %s ...", url)
+def _wait_for_tulip(cfg: dict, timeout: int = 60) -> None:
+    """Poll Tulip frontend endpoint until it responds or we give up."""
+    url = f"http://{cfg['ip']}:{cfg['frontend_port']}/"
+    log.info("Waiting for tulip at %s ...", url)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = subprocess.run(
@@ -254,37 +318,99 @@ def _wait_for_pkappa2(cfg: dict, timeout: int = 30) -> None:
             text=True,
         )
         if result.stdout.strip() not in ("", "000"):
-            log.info("pkappa2 is up (HTTP %s).", result.stdout.strip())
+            log.info("tulip is up (HTTP %s).", result.stdout.strip())
             return
         time.sleep(2)
-    log.warning("pkappa2 did not respond within %ds — first pcap upload may fail.", timeout)
+    log.warning("tulip did not respond within %ds — first pcap upload may fail.", timeout)
 
 
-def setup_pcap_capture(pcap_cfg: dict, pkappa2_cfg: dict) -> subprocess.Popen | None:
-    """Write the upload callback script and launch tcpdump."""
+def inject_tulip_api_basic_auth(tulip_dir: Path, username: str, password: str) -> bool:
+    api_file = tulip_dir / "services" / "api" / "webservice.py"
+    if not api_file.exists():
+        log.warning("Tulip API webservice.py not found, skipping auth injection")
+        return False
+
+    content = api_file.read_text()
+    if "TULIP_AUTH_USERNAME" in content and "@application.before_request" in content:
+        return False
+
+    insert_marker = "from flask import Flask, Response, send_file"
+    if insert_marker not in content:
+        return False
+
+    new_imports = """from flask import Flask, Response, send_file, request\nimport base64\n"""
+    content = content.replace(insert_marker, new_imports, 1)
+
+    auth_code = """
+
+TULIP_AUTH_USERNAME = os.getenv('TULIP_AUTH_USERNAME', '%s')
+TULIP_AUTH_PASSWORD = os.getenv('TULIP_AUTH_PASSWORD', '%s')
+
+
+def _check_tulip_auth(auth_header):
+    if not TULIP_AUTH_USERNAME or not TULIP_AUTH_PASSWORD:
+        return True
+    if not auth_header or not auth_header.startswith('Basic '):
+        return False
+    try:
+        encoded = auth_header.split(' ', 1)[1]
+        decoded = base64.b64decode(encoded).decode('utf-8')
+        user, pwd = decoded.split(':', 1)
+    except Exception:
+        return False
+    return user == TULIP_AUTH_USERNAME and pwd == TULIP_AUTH_PASSWORD
+
+
+@application.before_request
+def tulip_require_auth():
+    if not TULIP_AUTH_USERNAME or not TULIP_AUTH_PASSWORD:
+        return
+    if request.path.startswith('/favicon.ico'):
+        return
+    if request.path.startswith('/static/'):
+        return
+    if not _check_tulip_auth(request.headers.get('Authorization')):
+        return Response('Unauthorized', status=401, headers={'WWW-Authenticate': 'Basic realm="Tulip"'})
+""" % (username, password)
+
+    # Insert auth_code after import section and before routes
+    if "application = Flask(__name__)" in content:
+        content = content.replace("application = Flask(__name__)", "application = Flask(__name__)\n" + auth_code, 1)
+        api_file.write_text(content)
+        return True
+
+    return False
+
+
+def _wait_for_pkappa2(cfg: dict, timeout: int = 30) -> None:
+    """Legacy helper left for compatibility; use _wait_for_tulip instead."""
+    _wait_for_tulip(cfg, timeout)
+
+
+def setup_pcap_capture(pcap_cfg: dict, tulip_cfg: dict) -> subprocess.Popen | None:
+    """Write the local traffic copy callback script and launch tcpdump."""
+    if os.name == "nt":
+        log.warning("Skipping pcap capture setup on Windows host")
+        return None
+
     require_tool("tcpdump")
 
     PCAP_DIR.mkdir(parents=True, exist_ok=True)
 
-    netrc_path = Path("/root/.netrc_pkappa2")
-    netrc_path.write_text(
-        f"machine {pkappa2_cfg['ip']}\n"
-        f"login {pkappa2_cfg['user']}\n"
-        f"password {pkappa2_cfg['password']}\n"
-    )
-    os.chmod(netrc_path, 0o600)
+    tulip_traffic = Path(tulip_cfg.get("traffic_dir", str(TULIP_TRAFFIC_DIR)))
+    tulip_traffic.mkdir(parents=True, exist_ok=True)
 
     callback = Path("/root/tcpdump_complete.sh")
     callback.write_text(f"""\
 #!/bin/bash
 PCAP="$1"
 FILENAME=$(basename "$PCAP")
-URL="http://{pkappa2_cfg['ip']}:{pkappa2_cfg['port']}/upload/$FILENAME"
-echo "[pcap] Uploading $FILENAME"
-curl --silent --netrc-file "{netrc_path}" --data-binary "@$PCAP" "$URL" \\
-    && rm "$PCAP" \\
-    && echo "[pcap] Done: $FILENAME" \\
-    || echo "[pcap] Upload FAILED: $FILENAME"
+DEST="{tulip_traffic}/$FILENAME"
+echo "[pcap] Saving $FILENAME to Tulip traffic dir"
+cp "$PCAP" "$DEST" \
+    && rm "$PCAP" \
+    && echo "[pcap] Saved: $FILENAME" \
+    || echo "[pcap] Failed: $FILENAME"
 """)
     os.chmod(callback, EXECUTABLE)
     log.info("Wrote pcap callback -> %s", callback)
@@ -330,9 +456,9 @@ def main() -> subprocess.Popen | None:
     backup_services(services)
     install_bin_scripts()
     install_requirements()
-    setup_pkappa2(cfg["pkappa2"])
+    setup_tulip(cfg["tulip"])
 
-    pcap_proc = setup_pcap_capture(cfg["pcap"], cfg["pkappa2"])
+    pcap_proc = setup_pcap_capture(cfg["pcap"], cfg["tulip"])
 
     log.info("=" * 60)
     log.info("Setup complete! Log saved to %s", LOG_FILE)
