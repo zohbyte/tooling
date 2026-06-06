@@ -204,100 +204,110 @@ def setup_tulip(cfg: dict) -> None:
     require_tool("git")
 
     if not TULIP_DIR.exists():
-        log.error("Tulip directory %s does not exist. Please clone it first and re-run.", TULIP_DIR)
+        log.error("Tulip directory %s does not exist.", TULIP_DIR)
         return
 
-    # Keep using the existing local clone; remove repository metadata and unused scaffolding.
-    git_dir = TULIP_DIR / ".git"
-    if git_dir.exists():
-        shutil.rmtree(git_dir, ignore_errors=True)
-        log.info("Removed Tulip .git dir")
-
-    for maybe_remove in [".github", ".devcontainer", "README.md", "SECURITY.md", "docs", "docker-compose-suricata.yml", "docker-compose-test.yml"]:
-        path = TULIP_DIR / maybe_remove
-        if path.exists():
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                path.unlink()
-            log.info("Removed Tulip repository artifact: %s", path)
+    # Update repository
+    try:
+        run(["git", "pull"], cwd=TULIP_DIR)
+        log.info("Updated Tulip repository")
+    except subprocess.CalledProcessError as exc:
+        log.warning("git pull failed: %s", exc)
 
     traffic_dir = Path(cfg["traffic_dir"])
-    if os.name == "nt" and " " in str(traffic_dir):
-        safe_traffic_dir = Path.home() / "tulip_traffic"
-        log.info("Windows traffic path contains spaces; switching TRAFFIC_DIR_HOST to %s", safe_traffic_dir)
-        traffic_dir = safe_traffic_dir
-
     traffic_dir.mkdir(parents=True, exist_ok=True)
+
     try:
         os.chmod(traffic_dir, 0o777)
-    except Exception as exc:
-        log.warning("Failed to set permissions on traffic dir %s: %s", traffic_dir, exc)
-
-    pw = cfg["password"]
-    user = cfg["user"]
+    except Exception:
+        pass
 
     env_path = TULIP_DIR / ".env"
-    if (TULIP_DIR / ".env.example").exists():
-        shutil.copyfile(TULIP_DIR / ".env.example", env_path)
 
     env = {
         "TIMESCALE": "postgres://tulip@timescale:5432/tulip",
-        "TRAFFIC_DIR_HOST": str(traffic_dir.as_posix() if os.name == "nt" else traffic_dir),
+        "TRAFFIC_DIR_HOST": str(traffic_dir),
         "TRAFFIC_DIR_DOCKER": "/traffic",
-        "TULIP_AUTH_USERNAME": user,
-        "TULIP_AUTH_PASSWORD": pw,
+        "TULIP_AUTH_USERNAME": cfg["user"],
+        "TULIP_AUTH_PASSWORD": cfg["password"],
         "TICK_START": cfg["tick_start"],
         "TICK_LENGTH": str(cfg["tick_length"]),
         "FLAG_REGEX": cfg["flag_regex"],
-        "VM_IP": cfg.get("vm_ip"),
-        "TEAM_ID": cfg.get("team_id"),
-        "PCAP_OVER_IP": "",
-        "DUMP_PCAPS": "",
-        "FLAGID_SCRAPE": "",
-        "FLAGID_SCAN": "",
-        "FLAG_LIFETIME": "",
-        "FLAGID_ENDPOINT": "http://flagidendpoint:8000/flagids.json",
-        "FLAG_VALIDATOR_TYPE": "",
-        "FLAG_VALIDATOR_TEAM": "42",
-        "SURICATA_DIR_HOST": "",
+        "VM_IP": cfg.get("vm_ip", ""),
+        "TEAM_ID": cfg.get("team_id", ""),
     }
 
     existing_env = {}
+
     if env_path.exists():
         for line in env_path.read_text().splitlines():
-            if "=" in line and not line.strip().startswith("#"):
+            if "=" in line and not line.startswith("#"):
                 k, v = line.split("=", 1)
                 existing_env[k.strip()] = v.strip().strip('"')
 
     existing_env.update(env)
 
-    env_path.write_text("\n".join(f"{k}=\"{v}\"" for k, v in existing_env.items()) + "\n")
-    log.info("Wrote %s", env_path)
+    env_path.write_text(
+        "\n".join(f'{k}="{v}"' for k, v in existing_env.items()) + "\n"
+    )
 
-    # Inject basic auth layer into API service, if not already present
-    injected = inject_tulip_api_basic_auth(TULIP_DIR, user, pw)
-    if injected:
-        log.info("Injected Tulip API basic auth wrapper")
+    inject_tulip_api_basic_auth(
+        TULIP_DIR,
+        cfg["user"],
+        cfg["password"]
+    )
 
-    # Remove stale timescale volume so schema init runs cleanly every setup.
+    # Stop existing containers
     try:
-        run(["docker", "volume", "rm", "-f", "tulip_timescale-data"], cwd=TULIP_DIR)
-        log.info("Removed existing tulip_timescale-data volume for clean schema init")
+        run(
+            [
+                "docker",
+                "compose",
+                "down",
+                "--remove-orphans"
+            ],
+            cwd=TULIP_DIR
+        )
+        log.info("Stopped existing Tulip containers")
     except subprocess.CalledProcessError:
-        log.info("No existing tulip_timescale-data volume to remove")
+        pass
 
-    # Start Tulip stack and then wait for frontend endpoint
-    try:
-        run(["docker", "compose", "up", "-d"], cwd=TULIP_DIR)
-        log.info("tulip containers started")
-    except subprocess.CalledProcessError as exc:
-        log.error("Failed to start tulip: %s", exc)
-        return
+    # Rebuild images without deleting volumes
+    run(
+        [
+            "docker",
+            "compose",
+            "build",
+            "--pull"
+        ],
+        cwd=TULIP_DIR
+    )
+
+    # Recreate containers
+    run(
+        [
+            "docker",
+            "compose",
+            "up",
+            "-d",
+            "--force-recreate"
+        ],
+        cwd=TULIP_DIR
+    )
+
+    # Show status
+    subprocess.run(
+        ["docker", "compose", "ps"],
+        cwd=TULIP_DIR
+    )
 
     _wait_for_tulip(cfg)
 
-    log.info("tulip ready. User: %s Password: %s", user, pw)
+    log.info(
+        "Tulip ready. User: %s Password: %s",
+        cfg["user"],
+        cfg["password"]
+    )
 
 
 def _wait_for_path(path: Path, timeout: int = 15) -> None:
