@@ -259,16 +259,17 @@ def setup_tulip(cfg: dict) -> None:
 
     # Stop existing containers
     try:
+        log.info("Stopping Tulip containers and clearing volumes to ensure a clean database initialization...")
         run(
             [
                 "docker",
                 "compose",
                 "down",
-                "--remove-orphans"
+                "--remove-orphans",
+                "--volumes"
             ],
             cwd=TULIP_DIR
         )
-        log.info("Stopped existing Tulip containers")
     except subprocess.CalledProcessError:
         pass
 
