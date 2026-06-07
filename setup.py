@@ -275,13 +275,20 @@ def setup_tulip(cfg: dict) -> None:
         cfg["password"]
     )
 
+    # Detect if suricata compose file exists to include it in commands
+    compose_files = ["-f", "docker-compose.yml"]
+    if (TULIP_DIR / "docker-compose-suricata.yml").exists():
+        log.info("Detected Suricata configuration, including in setup.")
+        compose_files.extend(["-f", "docker-compose-suricata.yml"])
+
     # Stop existing containers
     try:
-        log.info("Stopping Tulip containers and clearing volumes to ensure a clean database initialization...")
+        log.info("Stopping Tulip containers and wiping volumes for clean initialization...")
         run(
             [
                 "docker",
-                "compose",
+                "compose"
+            ] + compose_files + [
                 "down",
                 "--remove-orphans",
                 "--volumes"
@@ -295,18 +302,37 @@ def setup_tulip(cfg: dict) -> None:
     run(
         [
             "docker",
-            "compose",
+            "compose"
+        ] + compose_files + [
             "build",
             "--pull"
         ],
         cwd=TULIP_DIR
     )
 
-    # Recreate containers
+    # Recreate containers in stages to handle database initialization
+    log.info("Starting database service...")
     run(
         [
             "docker",
-            "compose",
+            "compose"
+        ] + compose_files + [
+            "up",
+            "-d",
+            "timescale"
+        ],
+        cwd=TULIP_DIR
+    )
+
+    # Wait for the schema to be fully applied before starting the API/Assembler
+    _wait_for_db(TULIP_DIR)
+
+    log.info("Starting all Tulip services...")
+    run(
+        [
+            "docker",
+            "compose"
+        ] + compose_files + [
             "up",
             "-d",
             "--force-recreate"
@@ -315,12 +341,11 @@ def setup_tulip(cfg: dict) -> None:
     )
 
     # Show status
-    subprocess.run(
+    run(
         ["docker", "compose", "ps"],
         cwd=TULIP_DIR
     )
 
-    _wait_for_db(TULIP_DIR)
     _wait_for_tulip(cfg)
 
     log.info(
@@ -332,20 +357,37 @@ def setup_tulip(cfg: dict) -> None:
 
 def _wait_for_db(tulip_dir: Path, timeout: int = 90) -> None:
     """Wait for the timescale database container to be ready and initialized."""
-    log.info("Waiting for timescale database to initialize...")
+    log.info("Waiting for timescale database to initialize (schema application can take 30-60s)...")
+    
+    # Detect compose files again for this helper
+    compose_files = ["-f", "docker-compose.yml"]
+    if (tulip_dir / "docker-compose-suricata.yml").exists():
+        compose_files.extend(["-f", "docker-compose-suricata.yml"])
+
     deadline = time.monotonic() + timeout
+    start_time = time.monotonic()
     while time.monotonic() < deadline:
         # Check if the 'flow' table exists as a proxy for schema completion
         res = subprocess.run(
-            ["docker", "compose", "exec", "-T", "timescale", "psql", "-U", "tulip", "-d", "tulip", "-c", "SELECT 1 FROM flow LIMIT 0;"],
+            ["docker", "compose"] + compose_files + ["exec", "-T", "timescale", "psql", "-U", "tulip", "-d", "tulip", "-c", "SELECT 1 FROM flow LIMIT 0;"],
             cwd=tulip_dir,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         if res.returncode == 0:
-            log.info("Database and schema are ready.")
+            elapsed = time.monotonic() - start_time
+            log.info("Database and schema are ready (took %.1fs).", elapsed)
             return
-        time.sleep(2)
+        
+        # Provide feedback every 10 seconds
+        if int(time.monotonic() - start_time) % 10 == 0:
+            log.info("Still waiting for database initialization... (elapsed: %.1fs)", time.monotonic() - start_time)
+            # Check if container is actually running
+            state = subprocess.run(["docker", "compose"] + compose_files + ["ps", "--format", "json", "timescale"], cwd=tulip_dir, capture_output=True, text=True)
+            if "running" not in state.stdout.lower():
+                 log.warning("Timescale container does not appear to be running. Check 'docker logs tulip-timescale-1'")
+
+        time.sleep(5)
     log.warning("Database initialization check timed out. Tulip API may fail to start.")
 
 
