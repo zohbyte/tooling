@@ -355,7 +355,7 @@ def setup_tulip(cfg: dict) -> None:
     )
 
 
-def _wait_for_db(tulip_dir: Path, timeout: int = 90) -> None:
+def _wait_for_db(tulip_dir: Path, timeout: int = 180) -> None:
     """Wait for the timescale database container to be ready and initialized."""
     log.info("Waiting for timescale database to initialize (schema application can take 30-60s)...")
     

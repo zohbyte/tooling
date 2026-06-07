@@ -24,8 +24,6 @@ services:
       dockerfile: Dockerfile-frontend
     image: tulip-frontend:latest
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     expose:
       - 3000
     depends_on:
