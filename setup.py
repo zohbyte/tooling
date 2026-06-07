@@ -216,6 +216,9 @@ def setup_tulip(cfg: dict) -> None:
 
     traffic_dir = Path(cfg["traffic_dir"])
     traffic_dir.mkdir(parents=True, exist_ok=True)
+    
+    suricata_dir = BASE_DIR / "tulip_suricata"
+    suricata_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         os.chmod(traffic_dir, 0o777)
@@ -235,6 +238,21 @@ def setup_tulip(cfg: dict) -> None:
         "FLAG_REGEX": cfg["flag_regex"],
         "VM_IP": cfg.get("vm_ip", ""),
         "TEAM_ID": cfg.get("team_id", ""),
+        # Default values for service settings to silence docker-compose warnings
+        "FLAGID_SCRAPE": "false",
+        "FLAGID_ENDPOINT": "",
+        "VISUALIZER_URL": "",
+        "DUMP_PCAPS": "false",
+        "FLAGID_SCAN": "false",
+        "FLAG_LIFETIME": "600",
+        "FLAG_VALIDATOR_TYPE": "nop",
+        "FLAG_VALIDATOR_TEAM": "0",
+        "PCAP_OVER_IP": "",
+        "DUMP_PCAPS_INTERVAL": "5m",
+        "DUMP_PCAPS_FILENAME": "dump_%Y%m%d_%H%M%S.pcap",
+        "BPF": "",
+        "SURICATA_DIR_HOST": str(suricata_dir),
+        "SURICATA_DIR_DOCKER": "/suricata",
     }
 
     existing_env = {}
