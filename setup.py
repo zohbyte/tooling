@@ -302,6 +302,7 @@ def setup_tulip(cfg: dict) -> None:
         cwd=TULIP_DIR
     )
 
+    _wait_for_db(TULIP_DIR)
     _wait_for_tulip(cfg)
 
     log.info(
@@ -309,6 +310,25 @@ def setup_tulip(cfg: dict) -> None:
         cfg["user"],
         cfg["password"]
     )
+
+
+def _wait_for_db(tulip_dir: Path, timeout: int = 90) -> None:
+    """Wait for the timescale database container to be ready and initialized."""
+    log.info("Waiting for timescale database to initialize...")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        # Check if the 'flow' table exists as a proxy for schema completion
+        res = subprocess.run(
+            ["docker", "compose", "exec", "-T", "timescale", "psql", "-U", "tulip", "-d", "tulip", "-c", "SELECT 1 FROM flow LIMIT 0;"],
+            cwd=tulip_dir,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if res.returncode == 0:
+            log.info("Database and schema are ready.")
+            return
+        time.sleep(2)
+    log.warning("Database initialization check timed out. Tulip API may fail to start.")
 
 
 def _wait_for_path(path: Path, timeout: int = 15) -> None:
